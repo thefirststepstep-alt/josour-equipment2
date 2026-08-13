@@ -1345,7 +1345,6 @@
         // Default Initial Sample Data across non-Friday days
         const initialSampleData = [
             {
-                id: 'sample-1',
                 col_day: 'السبت',
                 col_council: 'مجلس الابتكار والتقنية',
                 col_facilitator: 'أحمد المنصور',
@@ -1354,7 +1353,6 @@
                 col_notes: 'جاهز ومعاين 🟢'
             },
             {
-                id: 'sample-2',
                 col_day: 'الأحد',
                 col_council: 'مجلس الريادة والقيادة',
                 col_facilitator: 'سارة الإبراهيمي',
@@ -1363,7 +1361,6 @@
                 col_notes: 'جاهز 🟢'
             },
             {
-                id: 'sample-3',
                 col_day: 'الإثنين',
                 col_council: 'مجلس الفكر والمعرفة',
                 col_facilitator: 'ياسين القاسمي',
@@ -1372,7 +1369,6 @@
                 col_notes: 'تم التسليم 🟢'
             },
             {
-                id: 'sample-4',
                 col_day: 'الثلاثاء',
                 col_council: 'مجلس التطور والإعلام',
                 col_facilitator: 'أحمد المنصور',
@@ -1381,7 +1377,6 @@
                 col_notes: 'تحت الصيانة 🟡'
             },
             {
-                id: 'sample-5',
                 col_day: 'الأربعاء',
                 col_council: 'مجلس العلوم والاستكشاف',
                 col_facilitator: 'مريم التميمي',
@@ -1390,7 +1385,6 @@
                 col_notes: 'جاهز 🟢'
             },
             {
-                id: 'sample-6',
                 col_day: 'الخميس',
                 col_council: 'مجلس التخطيط والمشاريع',
                 col_facilitator: 'ياسين القاسمي',
@@ -1488,7 +1482,7 @@
                     await firestoreDb.collection('equipment_schedule').doc('table_config').set({
                         columns: columnsSchema,
                         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-                    });
+                    }, { merge: true });
                 } catch(err) {
                     console.error('Error saving columns to Firestore:', err);
                 }
@@ -1712,20 +1706,29 @@
         async function loadCouncilsData() {
             if (activeBackend === 'firebase' && firestoreDb) {
                 try {
-                    firestoreDb.collection('councils_equipment').onSnapshot((snapshot) => {
+                    firestoreDb.collection('councils_equipment').onSnapshot(async (snapshot) => {
                         const data = [];
                         snapshot.forEach(doc => {
-                            data.push({ id: doc.id, ...doc.data() });
+                            const dData = doc.data();
+                            delete dData.id; // Crucial fix: strip internal 'id' so true Firestore doc.id is used!
+                            data.push({ id: doc.id, ...dData });
                         });
 
-                        if (data.length > 0) {
-                            councilsData = data;
+                        const isSeeded = localStorage.getItem('is_initial_seeded_v2');
+
+                        if (!isSeeded && snapshot.empty) {
+                            localStorage.setItem('is_initial_seeded_v2', 'true');
+                            for (const item of initialSampleData) {
+                                const cleanItem = { ...item };
+                                delete cleanItem.id;
+                                await firestoreDb.collection('councils_equipment').add(cleanItem);
+                            }
                         } else {
-                            // Seed initial sample data to Firestore if collection is empty
-                            initialSampleData.forEach(async (item) => {
-                                await firestoreDb.collection('councils_equipment').add(item);
-                            });
-                            councilsData = initialSampleData;
+                            if (!isSeeded) {
+                                localStorage.setItem('is_initial_seeded_v2', 'true');
+                            }
+                            councilsData = data;
+                            saveToLocalStorage();
                         }
 
                         updateDashboardStats();
@@ -1746,11 +1749,15 @@
 
         function loadFromLocalStorage() {
             const stored = localStorage.getItem('councils_equipment_data_v3');
-            if (stored) {
-                try { councilsData = JSON.parse(stored); } catch(e) { councilsData = [...initialSampleData]; }
-            } else {
+            const isSeeded = localStorage.getItem('is_initial_seeded_v2');
+            if (stored !== null) {
+                try { councilsData = JSON.parse(stored); } catch(e) { councilsData = []; }
+            } else if (!isSeeded) {
+                localStorage.setItem('is_initial_seeded_v2', 'true');
                 councilsData = [...initialSampleData];
                 saveToLocalStorage();
+            } else {
+                councilsData = [];
             }
             updateDashboardStats();
             renderTable(getFilteredData());
@@ -2075,8 +2082,10 @@
                 // Update in Firestore
                 if (activeBackend === 'firebase' && firestoreDb) {
                     try {
-                        await firestoreDb.collection('councils_equipment').doc(id).update(payload);
-                        showToast('تمت تعديل البيانات بنجاح في Firebase!');
+                        const cleanPayload = { ...payload };
+                        delete cleanPayload.id;
+                        await firestoreDb.collection('councils_equipment').doc(id).update(cleanPayload);
+                        showToast('تم تعديل البيانات بنجاح في Firebase!');
                     } catch(err) {
                         console.error('Firestore update error:', err);
                         showToast('تعذر التعديل في Firebase، تم الحفظ محلياً', 'warning');
@@ -2089,9 +2098,11 @@
                 // Insert into Firestore
                 if (activeBackend === 'firebase' && firestoreDb) {
                     try {
-                        const docRef = await firestoreDb.collection('councils_equipment').add(payload);
+                        const cleanPayload = { ...payload };
+                        delete cleanPayload.id;
+                        const docRef = await firestoreDb.collection('councils_equipment').add(cleanPayload);
                         payload.id = docRef.id;
-                        showToast('تمت إضاف الصف بنجاح في Firebase!');
+                        showToast('تمت إضافة الصف بنجاح في Firebase!');
                     } catch(err) {
                         console.error('Firestore add error:', err);
                         payload.id = 'id-' + Date.now();
@@ -2139,7 +2150,9 @@
                 if (activeBackend === 'firebase' && firestoreDb) {
                     try {
                         await firestoreDb.collection('councils_equipment').doc(targetId).delete();
-                    } catch(e) { console.error(e); }
+                    } catch(e) {
+                        console.error('Error deleting document from Firestore:', e);
+                    }
                 }
                 councilsData = councilsData.filter(c => c.id != targetId);
                 saveToLocalStorage();
